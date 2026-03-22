@@ -17,7 +17,7 @@ A lightweight, beautiful, self-hosted habit tracker designed for focus, wellness
 
 ```bash
 # Clone
-git clone https://github.com/yourusername/atomic-habits.git
+git clone https://github.com/archanapillai25/atomic-habits.git
 cd atomic-habits
 
 # Run with Docker
