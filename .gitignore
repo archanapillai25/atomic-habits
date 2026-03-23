@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+*.log
+water_log.txt
+tasks.json
+settings.json
+*.DS_Store
