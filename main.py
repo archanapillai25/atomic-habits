@@ -687,7 +687,7 @@ def home():
         Footer(
             A("⚙️ Settings", href="/settings"),
             A("📖 Help", href="/help"),
-            A("💻 GitHub", href="https://github.com/yourusername/atomic-habits")
+            A("💻 GitHub", href="https://github.com/archanapillai25/atomic-habits.git")
         ),
 
         Script(f"""
@@ -896,10 +896,10 @@ def help_page():
         ),
         Section(
             Ul(
-                Li("💧 Log water intake with the hydration tracker"),
+                Li("💧 Log water intake with the hydration tracker!"),
                 Li("⏱️ Use the Pomodoro timer for focused work sessions"),
                 Li("✅ Check off tasks as you complete them"),
-                Li("🚶 Get reminders to stand up every 45 minutes"),
+                Li("🚶 Get reminders to stand up every set minutes"),
                 Li("⚙️ Customize all settings to match your lifestyle"),
                 style="list-style: disc; padding-left: 20px; line-height: 1.8; font-size: 1.05em;"
             ),
