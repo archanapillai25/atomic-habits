@@ -896,7 +896,7 @@ def help_page():
         ),
         Section(
             Ul(
-                Li("💧 Log water intake with the hydration tracker"),
+                Li("💧 Log water intake with the hydration tracker!"),
                 Li("⏱️ Use the Pomodoro timer for focused work sessions"),
                 Li("✅ Check off tasks as you complete them"),
                 Li("🚶 Get reminders to stand up every set minutes"),
