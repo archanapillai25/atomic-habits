@@ -15,11 +15,8 @@ A lightweight, beautiful, self-hosted habit tracker designed for focus, wellness
 
 ## 🚀 Quick Start
 
-```bash
-# Clone
-git clone https://github.com/archanapillai25/atomic-habits.git
-cd atomic-habits
+1. Install Docker Desktop
+2. Run this command:
+   docker run -d -p 8080:8080 archanapillai25/archanapillai25:latest
+3. Open http://localhost:8080
 
-# Run with Docker
-docker build -t atomic-habits .
-docker run -p 8000:8000 --rm atomic-habits
