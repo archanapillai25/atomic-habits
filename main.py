@@ -3,7 +3,7 @@ from fasthtml import *
 from apscheduler.schedulers.background import BackgroundScheduler
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # --- Settings persistence ---
 SETTINGS_FILE = "settings.json"
@@ -12,7 +12,12 @@ DEFAULT_SETTINGS = {
     "standup_interval_min": 45,
     "pomodoro_minutes": 25,
     "standup_enabled": True,
-    "last_standup_shown": None
+    "water_reminder_enabled": True,
+    "water_reminder_interval_min": 60,
+    "reset_time_hhmm": "00:00",
+    "last_standup_shown": None,
+    "last_water_reminder_shown": None,
+    "last_reset_at": None
 }
 
 def load_settings():
@@ -67,23 +72,70 @@ def save_tasks(tasks):
         print(f"[ERROR] Failed to save tasks: {e}")
         return False
 
+def clear_file(path):
+    try:
+        with open(path, "w") as f:
+            f.write("")
+    except Exception as e:
+        print(f"[WARN] Failed to clear file {path}: {e}")
+
+def parse_iso_dt(value):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except:
+        return None
+
+def get_current_reset_point(now, reset_time_hhmm):
+    try:
+        hh, mm = reset_time_hhmm.split(":")
+        hh, mm = int(hh), int(mm)
+    except:
+        hh, mm = 0, 0
+
+    today_reset = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    if now >= today_reset:
+        return today_reset
+    return today_reset - timedelta(days=1)
+
+def check_and_reset_daily():
+    s = load_settings()
+    now = datetime.now()
+    reset_point = get_current_reset_point(now, s.get("reset_time_hhmm", "00:00"))
+    last_reset_at = parse_iso_dt(s.get("last_reset_at"))
+
+    should_reset = False
+    if last_reset_at is None:
+        # Initialize without wiping immediately on first launch
+        s["last_reset_at"] = reset_point.isoformat()
+        persist_settings(s)
+        return
+
+    if last_reset_at < reset_point:
+        should_reset = True
+
+    if should_reset:
+        clear_file(WATER_LOG)
+        save_tasks([])
+        s["last_reset_at"] = reset_point.isoformat()
+        s["last_standup_shown"] = now.isoformat()
+        s["last_water_reminder_shown"] = now.isoformat()
+        persist_settings(s)
+
 # --- Scheduler ---
 sched = BackgroundScheduler()
 app = FastHTML(live=True)
 
-# Track last standup time (in memory + persisted via settings)
+# Track last reminder times in memory
 last_standup_shown = None
+last_water_reminder_shown = None
 
 def get_last_standup_time():
     global last_standup_shown
     if last_standup_shown is None:
-        try:
-            s = load_settings()
-            last = s.get("last_standup_shown")
-            if last:
-                last_standup_shown = datetime.fromisoformat(last)
-        except Exception as e:
-            print(f"[WARN] Failed to parse last standup time: {e}")
+        s = load_settings()
+        last_standup_shown = parse_iso_dt(s.get("last_standup_shown"))
     return last_standup_shown
 
 def set_last_standup_time(dt):
@@ -93,7 +145,21 @@ def set_last_standup_time(dt):
     s["last_standup_shown"] = dt.isoformat()
     persist_settings(s)
 
-# --- CSS Styles (Embedded) ---
+def get_last_water_reminder_time():
+    global last_water_reminder_shown
+    if last_water_reminder_shown is None:
+        s = load_settings()
+        last_water_reminder_shown = parse_iso_dt(s.get("last_water_reminder_shown"))
+    return last_water_reminder_shown
+
+def set_last_water_reminder_time(dt):
+    global last_water_reminder_shown
+    last_water_reminder_shown = dt
+    s = load_settings()
+    s["last_water_reminder_shown"] = dt.isoformat()
+    persist_settings(s)
+
+# --- CSS Styles (same theme, only added water banner style mirroring standup) ---
 GLOBAL_STYLES = """
 * {
     margin: 0;
@@ -396,37 +462,46 @@ section h2 {
     transform: scale(1.05);
 }
 
-/* --- Stand-up Banner --- */
-#standup-banner {
+/* --- Reminder Banners --- */
+#standup-banner, #water-banner {
     position: fixed;
-    bottom: 30px;
     right: 30px;
-    background: linear-gradient(135deg, #ff9a56 0%, #ff6b6b 100%);
     color: white;
     padding: 20px 24px;
     border-radius: 12px;
-    box-shadow: 0 8px 32px rgba(255, 107, 107, 0.4);
+    box-shadow: 0 8px 32px rgba(0,0,0,0.2);
     max-width: 350px;
     animation: slideUp 0.5s cubic-bezier(0.34, 1.56, 0.64, 1);
     z-index: 9999;
     display: none;
 }
 
-#standup-banner h3 {
+#standup-banner {
+    bottom: 30px;
+    background: linear-gradient(135deg, #ff9a56 0%, #ff6b6b 100%);
+    box-shadow: 0 8px 32px rgba(255, 107, 107, 0.4);
+}
+
+#water-banner {
+    bottom: 170px;
+    background: linear-gradient(135deg, #36d1dc 0%, #5b86e5 100%);
+    box-shadow: 0 8px 32px rgba(91, 134, 229, 0.35);
+}
+
+#standup-banner h3, #water-banner h3 {
     font-size: 1.2em;
     margin-bottom: 10px;
     font-weight: 600;
 }
 
-#standup-banner p {
+#standup-banner p, #water-banner p {
     font-size: 0.95em;
     margin-bottom: 15px;
     opacity: 0.95;
 }
 
-#standup-banner button {
+#standup-banner button, #water-banner button {
     background: white;
-    color: #ff6b6b;
     border: none;
     padding: 10px 16px;
     border-radius: 6px;
@@ -436,7 +511,15 @@ section h2 {
     font-size: 0.9em;
 }
 
-#standup-banner button:hover {
+#standup-banner button {
+    color: #ff6b6b;
+}
+
+#water-banner button {
+    color: #5b86e5;
+}
+
+#standup-banner button:hover, #water-banner button:hover {
     transform: scale(1.05);
     box-shadow: 0 4px 12px rgba(0,0,0,0.2);
 }
@@ -486,6 +569,10 @@ footer a:hover {
     font-size: 1em;
     background: rgba(255,255,255,0.95);
     transition: all 0.3s ease;
+}
+
+.form-group input[type="checkbox"] {
+    width: auto;
 }
 
 .form-group input:focus {
@@ -570,6 +657,13 @@ footer a:hover {
         flex-direction: column;
     }
 
+    #water-banner {
+        bottom: 160px;
+        right: 20px;
+        left: 20px;
+        max-width: none;
+    }
+
     #standup-banner {
         bottom: 20px;
         right: 20px;
@@ -579,25 +673,46 @@ footer a:hover {
 }
 """
 
+def render_task_item(task, i):
+    return Li(
+        Input(type="checkbox", id=f"task-check-{i}", hx_post=f"/toggle/{i}", hx_swap="none", cls="task-checkbox"),
+        Span(task, id=f"task-text-{i}"),
+        Button("✕", hx_post=f"/delete/{i}", hx_target=f"#task-{i}", hx_swap="outerHTML swap:1s", cls="delete-task-btn"),
+        id=f"task-{i}",
+        cls="task-item"
+    )
+
 # --- ROUTES ---
 
 @app.get("/")
 def home():
+    check_and_reset_daily()
+
     settings = load_settings()
     total_water = get_water_total()
     tasks = get_tasks()
+
     progress_pct = min(100, int((total_water / settings["water_goal_ml"]) * 100)) if settings["water_goal_ml"] > 0 else 0
 
     last = get_last_standup_time()
-    show_banner = False
+    show_standup = False
     if settings.get("standup_enabled", True):
         if last is None:
-            # First load after app start: initialize timestamp so reminder starts counting properly
             set_last_standup_time(datetime.now())
         else:
             elapsed = (datetime.now() - last).total_seconds() / 60
             if elapsed >= settings["standup_interval_min"]:
-                show_banner = True
+                show_standup = True
+
+    last_water = get_last_water_reminder_time()
+    show_water = False
+    if settings.get("water_reminder_enabled", True):
+        if last_water is None:
+            set_last_water_reminder_time(datetime.now())
+        else:
+            elapsed_water = (datetime.now() - last_water).total_seconds() / 60
+            if elapsed_water >= settings["water_reminder_interval_min"]:
+                show_water = True
 
     return Title("Atomic Habits"), Head(
         Style(GLOBAL_STYLES)
@@ -636,9 +751,12 @@ def home():
             Div(
                 Div(f"{settings['pomodoro_minutes']:02d}:00", id="timer-display", cls="timer-display"),
                 P(
-                    f"Stand-up reminder every {settings['standup_interval_min']} minutes" +
-                    ("" if settings.get("standup_enabled", True) else " (disabled)"),
-                    style="text-align:center; color:rgba(255,255,255,0.95); font-weight:500; margin-top:-10px; margin-bottom:20px;"
+                    f"Stand-up reminder every {settings['standup_interval_min']} minutes",
+                    style="text-align:center; color:rgba(255,255,255,0.95); font-weight:500; margin-top:-10px; margin-bottom:8px;"
+                ),
+                P(
+                    f"Water reminder every {settings['water_reminder_interval_min']} minutes",
+                    style="text-align:center; color:rgba(255,255,255,0.92); font-weight:500; margin-bottom:20px;"
                 ),
                 Div(
                     Button("▶ Start", id="start-btn"),
@@ -658,22 +776,25 @@ def home():
                 Button("+ Add Task", type="submit"),
                 action="/add",
                 method="post",
-                cls="task-form"
+                cls="task-form",
+                id="task-form",
+                hx_post="/add",
+                hx_target="#task-list",
+                hx_swap="beforeend"
             ),
             Ul(
-                *[
-                    Li(
-                        Input(type="checkbox", id=f"task-check-{i}", hx_post=f"/toggle/{i}", hx_swap="none", cls="task-checkbox"),
-                        Span(task, id=f"task-text-{i}"),
-                        Button("✕", hx_post=f"/delete/{i}", hx_target=f"#task-{i}", hx_swap="outerHTML swap:1s", cls="delete-task-btn"),
-                        id=f"task-{i}",
-                        cls="task-item"
-                    )
-                    for i, task in enumerate(tasks)
-                ],
+                *[render_task_item(task, i) for i, task in enumerate(tasks)],
                 id="task-list"
             ),
             id="tasks-section"
+        ),
+
+        Div(
+            H3("💧 Time to Drink Water!"),
+            P("Take a few sips and stay hydrated."),
+            Button("Done", hx_post="/dismiss-water", hx_target="#water-banner", hx_swap="outerHTML swap:1s"),
+            id="water-banner",
+            style=f"display:{'block' if show_water else 'none'};"
         ),
 
         Div(
@@ -681,130 +802,297 @@ def home():
             P("Move around for 2 minutes. Your body needs a break."),
             Button("Got it!", hx_post="/dismiss-standup", hx_target="#standup-banner", hx_swap="outerHTML swap:1s"),
             id="standup-banner",
-            style=f"display:{'block' if show_banner else 'none'};"
+            style=f"display:{'block' if show_standup else 'none'};"
         ),
 
         Footer(
             A("⚙️ Settings", href="/settings"),
             A("📖 Help", href="/help"),
-            A("💻 GitHub", href="https://github.com/archanapillai25/atomic-habits.git")
+            A("💻 GitHub", href="https://github.com/yourusername/atomic-habits")
         ),
 
         Script(f"""
-            // ===== POMODORO TIMER =====
-            let pomodoroMinutes = {settings['pomodoro_minutes']};
-            let timeLeft = pomodoroMinutes * 60;
+            // ===== POMODORO TIMER WITH PERSISTENCE =====
+            const STORAGE_KEY = 'atomic_habits_timer_state';
+            let pomodoroMinutes = {load_settings()['pomodoro_minutes']};
             let timerInterval = null;
+            let timerState = {{
+                durationMinutes: pomodoroMinutes,
+                timeLeft: pomodoroMinutes * 60,
+                running: false,
+                endTime: null
+            }};
+
             const display = document.getElementById('timer-display');
             const startBtn = document.getElementById('start-btn');
             const pauseBtn = document.getElementById('pause-btn');
             const resetBtn = document.getElementById('reset-btn');
 
+            function saveTimerState() {{
+                localStorage.setItem(STORAGE_KEY, JSON.stringify(timerState));
+            }}
+
+            function loadTimerState() {{
+                try {{
+                    const raw = localStorage.getItem(STORAGE_KEY);
+                    if (!raw) {{
+                        saveTimerState();
+                        return;
+                    }}
+                    const parsed = JSON.parse(raw);
+
+                    // If settings duration changed, keep current running/remaining if present,
+                    // otherwise use new configured value
+                    if (parsed && typeof parsed === 'object') {{
+                        timerState = parsed;
+                        if (!timerState.durationMinutes) timerState.durationMinutes = pomodoroMinutes;
+
+                        if (!timerState.running && timerState.durationMinutes !== pomodoroMinutes && timerState.timeLeft === timerState.durationMinutes * 60) {{
+                            timerState.durationMinutes = pomodoroMinutes;
+                            timerState.timeLeft = pomodoroMinutes * 60;
+                        }}
+                    }}
+                }} catch (e) {{
+                    console.log('Failed to load timer state', e);
+                    timerState = {{
+                        durationMinutes: pomodoroMinutes,
+                        timeLeft: pomodoroMinutes * 60,
+                        running: false,
+                        endTime: null
+                    }};
+                    saveTimerState();
+                }}
+            }}
+
+            function formatTime(seconds) {{
+                const mins = Math.floor(seconds / 60);
+                const secs = seconds % 60;
+                return `${{mins}}:${{secs < 10 ? '0' : ''}}${{secs}}`;
+            }}
+
             function updateDisplay() {{
-                const mins = Math.floor(timeLeft / 60);
-                const secs = timeLeft % 60;
-                display.textContent = `${{mins}}:${{secs < 10 ? '0' : ''}}${{secs}}`;
-                document.title = `${{mins}}:${{secs < 10 ? '0' : ''}}${{secs}} - Atomic Habits`;
+                display.textContent = formatTime(timerState.timeLeft);
+                document.title = `${{formatTime(timerState.timeLeft)}} - Atomic Habits`;
+            }}
+
+            function gentleChime() {{
+                try {{
+                    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                    const now = audioCtx.currentTime;
+
+                    function tone(freq, start, duration, gainValue) {{
+                        const osc = audioCtx.createOscillator();
+                        const gain = audioCtx.createGain();
+
+                        osc.type = 'sine';
+                        osc.frequency.value = freq;
+
+                        gain.gain.setValueAtTime(0.0001, start);
+                        gain.gain.exponentialRampToValueAtTime(gainValue, start + 0.02);
+                        gain.gain.exponentialRampToValueAtTime(0.0001, start + duration);
+
+                        osc.connect(gain);
+                        gain.connect(audioCtx.destination);
+
+                        osc.start(start);
+                        osc.stop(start + duration);
+                    }}
+
+                    tone(523.25, now, 0.45, 0.08);
+                    tone(659.25, now + 0.18, 0.45, 0.06);
+                    tone(783.99, now + 0.36, 0.6, 0.05);
+                }} catch (e) {{
+                    console.log('Chime failed', e);
+                }}
+            }}
+
+            function tick() {{
+                if (!timerState.running || !timerState.endTime) return;
+
+                const remaining = Math.max(0, Math.round((timerState.endTime - Date.now()) / 1000));
+                timerState.timeLeft = remaining;
+                updateDisplay();
+                saveTimerState();
+
+                if (remaining <= 0) {{
+                    clearInterval(timerInterval);
+                    timerInterval = null;
+                    timerState.running = false;
+                    timerState.endTime = null;
+                    timerState.timeLeft = timerState.durationMinutes * 60;
+                    saveTimerState();
+                    updateDisplay();
+                    gentleChime();
+                    alert('🎉 Pomodoro complete! Take a 5-minute break.');
+                }}
             }}
 
             function startTimer() {{
-                if (timerInterval) return;
-                timerInterval = setInterval(() => {{
-                    timeLeft--;
-                    updateDisplay();
-                    if (timeLeft <= 0) {{
-                        clearInterval(timerInterval);
-                        timerInterval = null;
-                        alert('🎉 Pomodoro complete! Take a 5-minute break.');
-                        timeLeft = pomodoroMinutes * 60;
-                        updateDisplay();
-                    }}
-                }}, 1000);
+                if (timerState.running) return;
+
+                timerState.running = true;
+                timerState.endTime = Date.now() + (timerState.timeLeft * 1000);
+                saveTimerState();
+
+                if (timerInterval) clearInterval(timerInterval);
+                timerInterval = setInterval(tick, 1000);
+                tick();
             }}
 
             function pauseTimer() {{
+                if (!timerState.running) return;
+
+                timerState.timeLeft = Math.max(0, Math.round((timerState.endTime - Date.now()) / 1000));
+                timerState.running = false;
+                timerState.endTime = null;
+                saveTimerState();
+
                 if (timerInterval) {{
                     clearInterval(timerInterval);
                     timerInterval = null;
                 }}
+                updateDisplay();
             }}
 
             function resetTimer() {{
-                pauseTimer();
-                timeLeft = pomodoroMinutes * 60;
+                if (timerInterval) {{
+                    clearInterval(timerInterval);
+                    timerInterval = null;
+                }}
+
+                timerState = {{
+                    durationMinutes: pomodoroMinutes,
+                    timeLeft: pomodoroMinutes * 60,
+                    running: false,
+                    endTime: null
+                }};
+                saveTimerState();
                 updateDisplay();
+            }}
+
+            loadTimerState();
+            updateDisplay();
+
+            if (timerState.running) {{
+                if (timerInterval) clearInterval(timerInterval);
+                timerInterval = setInterval(tick, 1000);
+                tick();
             }}
 
             startBtn.onclick = startTimer;
             pauseBtn.onclick = pauseTimer;
             resetBtn.onclick = resetTimer;
-            updateDisplay();
 
             // ===== TASK CHECKBOX TOGGLE =====
-            document.querySelectorAll('.task-checkbox').forEach(checkbox => {{
-                checkbox.addEventListener('change', function() {{
-                    const span = this.nextElementSibling;
-                    if (this.checked) {{
+            document.addEventListener('change', function(e) {{
+                if (e.target && e.target.classList.contains('task-checkbox')) {{
+                    const span = e.target.nextElementSibling;
+                    if (e.target.checked) {{
                         span.style.textDecoration = 'line-through';
                         span.style.color = '#bdc3c7';
                     }} else {{
                         span.style.textDecoration = 'none';
                         span.style.color = '#2c3e50';
                     }}
-                }});
+                }}
             }});
 
-            // ===== STAND-UP REMINDER =====
-            function checkStandup() {{
-                fetch('/standup-status')
+            // ===== TASK FORM UX FIXES =====
+            document.body.addEventListener('htmx:beforeRequest', function(e) {{
+                if (e.target && e.target.id === 'task-form') {{
+                    sessionStorage.setItem('atomic_scroll_y', String(window.scrollY));
+                }}
+            }});
+
+            document.body.addEventListener('htmx:afterRequest', function(e) {{
+                if (e.target && e.target.id === 'task-form') {{
+                    const taskInput = document.getElementById('task');
+                    if (taskInput) taskInput.value = '';
+
+                    const savedY = sessionStorage.getItem('atomic_scroll_y');
+                    if (savedY !== null) {{
+                        window.scrollTo({{ top: parseInt(savedY, 10), behavior: 'auto' }});
+                    }}
+                }}
+            }});
+
+            // ===== REMINDER POLLING =====
+            function checkReminders() {{
+                fetch('/reminder-status')
                     .then(r => r.json())
                     .then(data => {{
-                        if (data.show) {{
-                            document.getElementById('standup-banner').style.display = 'block';
+                        if (data.water_show) {{
+                            const wb = document.getElementById('water-banner');
+                            if (wb) wb.style.display = 'block';
+                        }}
+                        if (data.standup_show) {{
+                            const sb = document.getElementById('standup-banner');
+                            if (sb) sb.style.display = 'block';
                         }}
                     }})
-                    .catch(e => console.log('[STANDUP] Check failed:', e));
+                    .catch(e => console.log('[REMINDER] Check failed:', e));
             }}
 
-            checkStandup();
-            setInterval(checkStandup, 60000);
+            checkReminders();
+            setInterval(checkReminders, 60000);
         """)
     )
 
-@app.get("/standup-status")
-def standup_status():
+@app.get("/reminder-status")
+def reminder_status():
+    check_and_reset_daily()
     settings = load_settings()
-    last = get_last_standup_time()
+    now = datetime.now()
 
-    if not settings.get("standup_enabled", True):
-        return {"show": False}
+    standup_show = False
+    water_show = False
 
-    if last is None:
-        set_last_standup_time(datetime.now())
-        return {"show": False}
+    if settings.get("standup_enabled", True):
+        last = get_last_standup_time()
+        if last is None:
+            set_last_standup_time(now)
+        else:
+            elapsed = (now - last).total_seconds() / 60
+            standup_show = elapsed >= settings["standup_interval_min"]
 
-    elapsed = (datetime.now() - last).total_seconds() / 60
-    return {"show": elapsed >= settings["standup_interval_min"]}
+    if settings.get("water_reminder_enabled", True):
+        last_water = get_last_water_reminder_time()
+        if last_water is None:
+            set_last_water_reminder_time(now)
+        else:
+            elapsed_water = (now - last_water).total_seconds() / 60
+            water_show = elapsed_water >= settings["water_reminder_interval_min"]
+
+    return {"standup_show": standup_show, "water_show": water_show}
 
 @app.post("/log")
 def log(mL: int):
+    check_and_reset_daily()
     with open(WATER_LOG, "a") as f:
         f.write(f"{mL}\n")
+    set_last_water_reminder_time(datetime.now())
     return RedirectResponse("/", status_code=303)
 
 @app.post("/add")
 def add(task: str):
+    check_and_reset_daily()
     tasks = get_tasks()
-    tasks.append(task)
-    save_tasks(tasks)
-    return RedirectResponse("/", status_code=303)
+    task = (task or "").strip()
+    if task:
+        tasks.append(task)
+        save_tasks(tasks)
+        idx = len(tasks) - 1
+        return render_task_item(task, idx)
+    return ""
 
 @app.post("/toggle/{idx}")
 def toggle_task(idx: int):
+    check_and_reset_daily()
     return ""
 
 @app.post("/delete/{idx}")
 def delete_task(idx: int):
+    check_and_reset_daily()
     tasks = get_tasks()
     if 0 <= idx < len(tasks):
         tasks.pop(idx)
@@ -816,8 +1104,14 @@ def dismiss_standup():
     set_last_standup_time(datetime.now())
     return ""
 
+@app.post("/dismiss-water")
+def dismiss_water():
+    set_last_water_reminder_time(datetime.now())
+    return ""
+
 @app.get("/settings")
 def settings_page(request):
+    check_and_reset_daily()
     s = load_settings()
     saved = request.query_params.get("saved") == "1"
     error = request.query_params.get("error") == "1"
@@ -836,21 +1130,32 @@ def settings_page(request):
                 ),
                 Div(
                     Label("🚶 Stand-Up Interval (minutes):", style="display:block; margin-bottom:8px;"),
-                    Input(name="standup_interval_min", type="number", value=s["standup_interval_min"], min="15", max="120"),
+                    Input(name="standup_interval_min", type="number", value=s["standup_interval_min"], min="15", max="240"),
                     cls="form-group"
                 ),
                 Div(
                     Label("🍅 Pomodoro Duration (minutes):", style="display:block; margin-bottom:8px;"),
-                    Input(name="pomodoro_minutes", type="number", value=s["pomodoro_minutes"], min="5", max="60"),
+                    Input(name="pomodoro_minutes", type="number", value=s["pomodoro_minutes"], min="5", max="120"),
+                    cls="form-group"
+                ),
+                Div(
+                    Label("💧 Water Reminder Interval (minutes):", style="display:block; margin-bottom:8px;"),
+                    Input(name="water_reminder_interval_min", type="number", value=s["water_reminder_interval_min"], min="10", max="240"),
+                    cls="form-group"
+                ),
+                Div(
+                    Label("🕒 Auto Reset Time (HH:MM):", style="display:block; margin-bottom:8px;"),
+                    Input(name="reset_time_hhmm", type="time", value=s.get("reset_time_hhmm", "00:00")),
                     cls="form-group"
                 ),
                 Div(
                     Label("🔔 Enable Stand-Up Reminders:", style="display:block; margin-bottom:8px;"),
-                    Input(
-                        name="standup_enabled",
-                        type="checkbox",
-                        checked=s.get("standup_enabled", True)
-                    ),
+                    Input(name="standup_enabled", type="checkbox", checked=s.get("standup_enabled", True)),
+                    cls="form-group"
+                ),
+                Div(
+                    Label("💧 Enable Water Reminders:", style="display:block; margin-bottom:8px;"),
+                    Input(name="water_reminder_enabled", type="checkbox", checked=s.get("water_reminder_enabled", True)),
                     cls="form-group"
                 ),
                 Button("💾 Save Settings", type="submit", cls="settings-submit"),
@@ -872,14 +1177,20 @@ def save_settings_route(
     water_goal_ml: int,
     standup_interval_min: int,
     pomodoro_minutes: int,
-    standup_enabled: str = None
+    water_reminder_interval_min: int,
+    reset_time_hhmm: str,
+    standup_enabled: str = None,
+    water_reminder_enabled: str = None
 ):
     s = load_settings()
     s.update({
         "water_goal_ml": water_goal_ml,
         "standup_interval_min": standup_interval_min,
         "pomodoro_minutes": pomodoro_minutes,
-        "standup_enabled": standup_enabled is not None
+        "water_reminder_interval_min": water_reminder_interval_min,
+        "reset_time_hhmm": reset_time_hhmm or "00:00",
+        "standup_enabled": standup_enabled is not None,
+        "water_reminder_enabled": water_reminder_enabled is not None
     })
 
     if persist_settings(s):
@@ -889,6 +1200,7 @@ def save_settings_route(
 
 @app.get("/help")
 def help_page():
+    check_and_reset_daily()
     return Title("📖 Help"), Head(Style(GLOBAL_STYLES)), Main(
         Header(
             H1("📖 How to Use"),
@@ -896,11 +1208,11 @@ def help_page():
         ),
         Section(
             Ul(
-                Li("💧 Log water intake with the hydration tracker!"),
+                Li("💧 Log water intake with the hydration tracker"),
                 Li("⏱️ Use the Pomodoro timer for focused work sessions"),
-                Li("✅ Check off tasks as you complete them"),
-                Li("🚶 Get reminders to stand up every set minutes"),
-                Li("⚙️ Customize all settings to match your lifestyle"),
+                Li("🔔 Get stand-up and water reminders based on your settings"),
+                Li("✅ Add and manage daily tasks without interrupting your timer"),
+                Li("🕒 Auto-reset your water and tasks every day at your chosen time"),
                 style="list-style: disc; padding-left: 20px; line-height: 1.8; font-size: 1.05em;"
             ),
             style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border-radius: 16px;"
