@@ -18,7 +18,7 @@ A lightweight, beautiful, self-hosted habit tracker designed for focus, wellness
 1. Install Docker Desktop
 2. Open command prompt and Run this command
    docker run -d -p 8080:8080 archanapillai25/archanapillai25:latest
-3. Open http://localhost:8080
+3. Open http://localhost:8000
 4. To stop app
    docker stop 08aeeedf1877093140c481d1c18bbbd0d099ad507eb8c13f806f4b548add23c0
 
