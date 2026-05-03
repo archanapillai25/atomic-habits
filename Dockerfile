@@ -1,15 +1,20 @@
-# Dockerfile — Atomic Habits (Production-Ready)
+# Dockerfile — Atomic Habits
 FROM python:3.12-slim
 
-# 🔧 Install system dependencies (git + curl for reliability)
-RUN apt-get update && apt-get install -y --no-install-recommends git curl && rm -rf /var/lib/apt/lists/*
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git curl \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY main.py .
 
-# ✅ Now safe to use git+https://... and upgrade pip
-RUN pip install --upgrade pip && \
-    pip install "git+https://github.com/answerdotai/fasthtml.git" apscheduler
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir "git+https://github.com/answerdotai/fasthtml.git" apscheduler
 
 EXPOSE 8000
+
 CMD ["python", "main.py"]

@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 # --- Settings persistence ---
 SETTINGS_FILE = "settings.json"
 DEFAULT_SETTINGS = {
-    "water_goal_ml": 2000,
+   "water_goal_ml": 2000,
     "standup_interval_min": 45,
     "pomodoro_minutes": 25,
     "standup_enabled": True,
@@ -792,7 +792,7 @@ def home():
         Div(
             H3("💧 Time to Drink Water!"),
             P("Take a few sips and stay hydrated."),
-            Button("Done", onclick="dismissReminder('water')"),
+            Button("Done", hx_post="/dismiss-water", hx_target="#water-banner", hx_swap="outerHTML swap:1s"),
             id="water-banner",
             style=f"display:{'block' if show_water else 'none'};"
         ),
@@ -800,7 +800,7 @@ def home():
         Div(
             H3("🔔 Time to Stand Up!"),
             P("Move around for 2 minutes. Your body needs a break."),
-            Button("Got it!", onclick="dismissReminder('standup')"),
+            Button("Got it!", hx_post="/dismiss-standup", hx_target="#standup-banner", hx_swap="outerHTML swap:1s"),
             id="standup-banner",
             style=f"display:{'block' if show_standup else 'none'};"
         ),
@@ -814,7 +814,6 @@ def home():
         Script(f"""
             // ===== POMODORO TIMER WITH PERSISTENCE =====
             const STORAGE_KEY = 'atomic_habits_timer_state';
-            const REMINDER_POLL_MS = 15000;
             let pomodoroMinutes = {load_settings()['pomodoro_minutes']};
             let timerInterval = null;
             let timerState = {{
@@ -840,8 +839,10 @@ def home():
                         saveTimerState();
                         return;
                     }}
-
                     const parsed = JSON.parse(raw);
+
+                    // If settings duration changed, keep current running/remaining if present,
+                    // otherwise use new configured value
                     if (parsed && typeof parsed === 'object') {{
                         timerState = parsed;
                         if (!timerState.durationMinutes) timerState.durationMinutes = pomodoroMinutes;
@@ -874,72 +875,67 @@ def home():
                 document.title = `${{formatTime(timerState.timeLeft)}} - Atomic Habits`;
             }}
 
-            // ===== GENTLE REMINDER SOUND =====
-            let audioCtx = null;
-            let audioUnlocked = false;
+let audioUnlocked = false;
+let lastSoundedReminderKey = null;
 
-            function getAudioContext() {{
-                if (!audioCtx) {{
-                    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-                }}
-                return audioCtx;
-            }}
+function unlockAudio() {
+    if (audioUnlocked) return;
 
-            function unlockAudio() {{
-                if (audioUnlocked) return;
+    try {
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 
-                try {{
-                    const ctx = getAudioContext();
-                    if (ctx.state === 'suspended') {{
-                        ctx.resume();
-                    }}
-                    audioUnlocked = true;
-                }} catch (e) {{
-                    console.log('Audio unlock failed', e);
-                }}
-            }}
+        if (audioCtx.state === 'suspended') {
+            audioCtx.resume();
+        }
 
-            document.addEventListener('click', unlockAudio, {{ once: true }});
-            document.addEventListener('keydown', unlockAudio, {{ once: true }});
+        audioUnlocked = true;
+    } catch (e) {
+        console.log('Audio unlock failed', e);
+    }
+}
 
-            function gentleChime() {{
-                try {{
-                    const ctx = getAudioContext();
-                    if (ctx.state === 'suspended') {{
-                        ctx.resume();
-                    }}
+document.addEventListener('click', unlockAudio, { once: true });
+document.addEventListener('keydown', unlockAudio, { once: true });
 
-                    const now = ctx.currentTime;
+function gentleChime() {
+    try {
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const now = audioCtx.currentTime;
 
-                    function tone(freq, start, duration, gainValue) {{
-                        const osc = ctx.createOscillator();
-                        const gain = ctx.createGain();
+        function tone(freq, start, duration, gainValue) {
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
 
-                        osc.type = 'sine';
-                        osc.frequency.value = freq;
+            osc.type = 'sine';
+            osc.frequency.value = freq;
 
-                        gain.gain.setValueAtTime(0.0001, start);
-                        gain.gain.exponentialRampToValueAtTime(gainValue, start + 0.02);
-                        gain.gain.exponentialRampToValueAtTime(0.0001, start + duration);
+            gain.gain.setValueAtTime(0.0001, start);
+            gain.gain.exponentialRampToValueAtTime(gainValue, start + 0.02);
+            gain.gain.exponentialRampToValueAtTime(0.0001, start + duration);
 
-                        osc.connect(gain);
-                        gain.connect(ctx.destination);
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
 
-                        osc.start(start);
-                        osc.stop(start + duration);
-                    }}
+            osc.start(start);
+            osc.stop(start + duration);
+        }
 
-                    tone(523.25, now, 0.45, 0.08);
-                    tone(659.25, now + 0.18, 0.45, 0.06);
-                    tone(783.99, now + 0.36, 0.6, 0.05);
-                }} catch (e) {{
-                    console.log('Chime failed', e);
-                }}
-            }}
+        tone(523.25, now, 0.45, 0.08);
+        tone(659.25, now + 0.18, 0.45, 0.06);
+        tone(783.99, now + 0.36, 0.6, 0.05);
+    } catch (e) {
+        console.log('Chime failed', e);
+    }
+}
 
-            function playReminderSound() {{
-                gentleChime();
-            }}
+function playReminderSoundOnce(type) {
+    const key = `${type}-${new Date().toDateString()}`;
+
+    if (lastSoundedReminderKey === key) return;
+
+    lastSoundedReminderKey = key;
+    gentleChime();
+}
 
             function tick() {{
                 if (!timerState.running || !timerState.endTime) return;
@@ -1052,45 +1048,31 @@ def home():
             }});
 
             // ===== REMINDER POLLING =====
-            function showReminderBanner(id) {{
-                const banner = document.getElementById(id);
-                if (!banner) return;
+            function checkReminders() {
+    fetch('/reminder-status')
+        .then(r => r.json())
+        .then(data => {
+            if (data.water_show) {
+                const wb = document.getElementById('water-banner');
+                if (wb && wb.style.display !== 'block') {
+                    wb.style.display = 'block';
+                    playReminderSoundOnce('water');
+                }
+            }
 
-                const wasHidden = banner.style.display !== 'block';
-                if (wasHidden) {{
-                    banner.style.display = 'block';
-                    playReminderSound();
-                }}
-            }}
-
-            function checkReminders() {{
-                fetch('/reminder-status')
-                    .then(r => r.json())
-                    .then(data => {{
-                        if (data.water_show) {{
-                            showReminderBanner('water-banner');
-                        }}
-                        if (data.standup_show) {{
-                            showReminderBanner('standup-banner');
-                        }}
-                    }})
-                    .catch(e => console.log('[REMINDER] Check failed:', e));
-            }}
-
-            function dismissReminder(type) {{
-                const bannerId = type === 'water' ? 'water-banner' : 'standup-banner';
-                const url = type === 'water' ? '/dismiss-water' : '/dismiss-standup';
-                const banner = document.getElementById(bannerId);
-
-                fetch(url, {{ method: 'POST' }})
-                    .then(() => {{
-                        if (banner) banner.style.display = 'none';
-                    }})
-                    .catch(e => console.log('[REMINDER] Dismiss failed:', e));
-            }}
+            if (data.standup_show) {
+                const sb = document.getElementById('standup-banner');
+                if (sb && sb.style.display !== 'block') {
+                    sb.style.display = 'block';
+                    playReminderSoundOnce('standup');
+                }
+            }
+        })
+        .catch(e => console.log('[REMINDER] Check failed:', e));
+}
 
             checkReminders();
-            setInterval(checkReminders, REMINDER_POLL_MS);
+            setInterval(checkReminders, 15000);
         """)
     )
 
